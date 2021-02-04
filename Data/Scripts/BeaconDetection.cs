@@ -359,6 +359,8 @@ namespace ThermalShipBeaconV3
             if (!_thermalRefreshNeeded) {
                 return _cachedThermalOutput;
             }
+
+            _thermalRefreshNeeded = false;
             
             double rawThermalOutput = 0.0d;
             //static grid logic

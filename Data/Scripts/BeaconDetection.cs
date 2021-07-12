@@ -19,14 +19,21 @@ namespace ThermalShipBeaconV3
     [MyEntityComponentDescriptor(typeof(MyObjectBuilder_Beacon), false, "LargeBlockBeacon", "SmallBlockBeacon")]
     public class BeaconDetect : MyGameLogicComponent
     {
+        private IMyBeacon Beacon => Entity as IMyBeacon;
+        private IMyCubeGrid CubeGrid => Beacon.CubeGrid;
 
-        IMyTerminalBlock Beacon;
+        private readonly TimeSpan _tickInterval = new TimeSpan(0, 0, 6);
+        private DateTime _nextRun = DateTime.Now;
+        
         private List<IMyPowerProducer> PowerProducers = new List<IMyPowerProducer>();
         private List<IMyThrust> ThermalProducers = new List<IMyThrust>();
         private List<IMyVirtualMass> HeatSinks = new List<IMyVirtualMass>();
+
+        private bool _thermalRefreshNeeded = true;
+        private float _cachedThermalOutput = 0;
+        
         private MyObjectBuilder_EntityBase m_objectBuilder;
         private MyDefinitionId electricity = MyResourceDistributorComponent.ElectricityId;
-        private IMyCubeGrid CubeGrid = null;
         private bool MessageSent = false;
         private bool SpamMessageSent = false;
         private bool unloadHandlers = false;
@@ -36,6 +43,7 @@ namespace ThermalShipBeaconV3
         //Block OFF Coding
         public static IMyTerminalBlock m_block = null;
         IMyBeacon m_beacon = null;
+        
         public override void Init(MyObjectBuilder_EntityBase objectBuilder)
         {
             m_objectBuilder = objectBuilder;
@@ -65,9 +73,8 @@ namespace ThermalShipBeaconV3
             m_beacon.EnabledChanged -= M_beacon_EnabledChanged;
         }
 
-        private void CubeGrid_UpdatePowerGrid(IMySlimBlock obj)
+        private void CubeGrid_UpdatePowerGrid()
         {
-            CubeGrid = obj.CubeGrid;
             var gts = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(CubeGrid);
             gts.GetBlocksOfType(PowerProducers, block =>
             {
@@ -120,7 +127,7 @@ namespace ThermalShipBeaconV3
         {
             if (obj is IMyBeacon)
             {
-                Beacon_CheckThermal((IMyEntity)obj);
+                Beacon_CheckThermal();
             }
         }
         private float GetBeaconRadius()
@@ -136,118 +143,103 @@ namespace ThermalShipBeaconV3
         }
         public override void UpdateAfterSimulation100()
         {
-            if (lastRun >= 6)
+            if (DateTime.Now < _nextRun) {
+                return;
+            }
+            _nextRun = DateTime.Now + _tickInterval;
+
+            _thermalRefreshNeeded = true;
+
+            if (Beacon == null) {
+                return;
+            }
+            
+            try
             {
-                lastRun = 0;
-                if (Beacon == null)
+                if (Beacon.IsWorking)
                 {
-                    Beacon = Entity as IMyTerminalBlock;
-                    //grid maintenance. 
-                    CubeGrid = Beacon.CubeGrid;
+                    Beacon_CheckThermal();
                 }
-
-                if (PowerProducers.Count == 0 || ThermalProducers.Count == 0)
+                else
                 {
-                    CubeGrid_UpdatePowerGrid(Beacon.SlimBlock);
-                }
-
-                if (Beacon != null)
-                {
-                    try
+                    CubeGrid_UpdatePowerGrid();
+                    if (GetThermalOutput(Beacon) != 0.0f && GetThermalOutput(Beacon) != lastOutput && GetThermalOutput(Beacon) != calculateRadius(GetThermalOutput(Beacon))) //Checks for zero power grids
                     {
-                        if (Beacon.IsWorking)
-                        {
-                            Beacon_CheckThermal(Beacon);
-                        }
-                        else
-                        {
-                            {
-                                CubeGrid_UpdatePowerGrid(Beacon.SlimBlock);
-                                if (GetThermalOutput(Beacon) != 0.0f && GetThermalOutput(Beacon) != lastOutput && GetThermalOutput(Beacon) != calculateRadius(GetThermalOutput(Beacon))) //Checks for zero power grids
-                                {
-                                    //if (GetThermalOutput(Beacon) <= 5)
-                                    //{
-                                    //ApplyDamagePower(Beacon);
-                                    TogglePower(Beacon);
-                                    //}
-                                }
-                            }
-                        }
-                    }
-                    catch (Exception exc)
-                    {
-                        MyLog.Default.WriteLine(exc);
+                        //if (GetThermalOutput(Beacon) <= 5)
+                        //{
+                        //ApplyDamagePower(Beacon);
+                        TogglePower(Beacon);
+                        //}
                     }
                 }
             }
-            lastRun += 1;
+            catch (Exception exc)
+            {
+                MyLog.Default.WriteLine(exc);
+            }
         }
 
-        private void Beacon_CheckThermal(VRage.ModAPI.IMyEntity obj)
-        {
-            if (Beacon != null)
+        private void Beacon_CheckThermal() {
+            if (Beacon == null) {
+                return;
+            }
+            
+            var subtype = Beacon.Name;
+            var output = calculateRadius(GetThermalOutput(Beacon));
+
+            if (lastOutput > output)
             {
-                var subtype = Beacon.Name;
-                if (obj is IMyBeacon && obj != null)
+                delay = 0;
+                output = lastOutput * 0.95f;
+            }
+
+            if (output <= 1.0f)
+            {
+                output = 1.0f;
+            }
+
+            if (GetBeaconRadius() < output && output != 0.0f && (GetBeaconRadius() != lastOutput))
+            {
+                delay += 1;
+                CubeGrid_UpdatePowerGrid();
+                if (delay == 5)
                 {
-                    var output = calculateRadius(GetThermalOutput(Beacon));
-                    var beacon = obj as IMyBeacon;
-
-                    if (lastOutput > output)
+                    //ApplyDamagePower(Beacon);
+                    if (output <= 500000)// && output <= 5)
                     {
-                        delay = 0;
-                        output = lastOutput * 0.95f;
-                    }
-
-                    if (output <= 1.0f)
-                    {
-                        output = 1.0f;
-                    }
-
-                    if (GetBeaconRadius() < output && output != 0.0f && (GetBeaconRadius() != lastOutput))
-                    {
-                        delay += 1;
-                        CubeGrid_UpdatePowerGrid(Beacon.SlimBlock);
-                        if (delay == 5)
-                        {
-                            //ApplyDamagePower(Beacon);
-                            if (output <= 500000)// && output <= 5)
-                            {
-                                TogglePower(Beacon);
-                            }
-                        }
-                    }
-
-                    lastOutput = output;
-                    beacon.Radius = output;
-                    //MyAPIGateway.Utilities.ShowMessage("ThermalBeacon_Debug", "beacon.Radius Output Range:" + output.ToString());
-                    beacon.Enabled = true;
-
-                    if (beacon.Radius <= 8000)
-                    {
-                        beacon.HudText = "Small Signature";
-                    }
-
-                    if (beacon.Radius >= 8001 && beacon.Radius <= 100000)
-                    {
-                        beacon.HudText = "Medium Signature";
-                    }
-
-                    if (beacon.Radius >= 100001 && beacon.Radius <= 250000)
-                    {
-                        beacon.HudText = "Large Signature";
-                    }
-
-                    if (beacon.Radius >= 250001 && beacon.Radius <= 400000)
-                    {
-                        beacon.HudText = "Huge Signature";
-                    }
-
-                    if (beacon.Radius >= 400001)
-                    {
-                        beacon.HudText = "Massive Signature";
+                        TogglePower(Beacon);
                     }
                 }
+            }
+
+            lastOutput = output;
+            Beacon.Radius = output;
+            //MyAPIGateway.Utilities.ShowMessage("ThermalBeacon_Debug", "beacon.Radius Output Range:" + output.ToString());
+            Beacon.Enabled = true;
+
+            if (Beacon.Radius <= 8000)
+            {
+                Beacon.HudText = "Small Signature";
+            }
+
+            if (Beacon.Radius >= 8001 && Beacon.Radius <= 100000)
+            {
+                Beacon.HudText = "Medium Signature";
+            }
+
+            if (Beacon.Radius >= 100001 && Beacon.Radius <= 250000)
+            {
+                Beacon.HudText = "Large Signature";
+            }
+
+            if (Beacon.Radius >= 250001 && Beacon.Radius <= 400000)
+            {
+                Beacon.HudText = "Huge Signature";
+            }
+
+            if (Beacon.Radius >= 400001)
+            {
+                Beacon.HudText = "Massive Signature";
             }
         }
 
@@ -364,6 +356,12 @@ namespace ThermalShipBeaconV3
         }
         private float GetThermalOutput(IMyTerminalBlock block)
         {
+            if (!_thermalRefreshNeeded) {
+                return _cachedThermalOutput;
+            }
+
+            _thermalRefreshNeeded = false;
+            
             double rawThermalOutput = 0.0d;
             //static grid logic
             //if (block.CubeGrid.IsStatic)
@@ -459,7 +457,9 @@ namespace ThermalShipBeaconV3
             double thermalOutput = 0.0d;
             thermalOutput = Math.Round(rawThermalOutput, 4);
             //MyAPIGateway.Utilities.ShowMessage("ThermalBeacon_Debug", "thermalOutput Range: " + thermalOutput.ToString());
-            return (float)thermalOutput;
+
+            _cachedThermalOutput = (float)thermalOutput;
+            return _cachedThermalOutput;
         }
     }
 }
